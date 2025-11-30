@@ -29,7 +29,7 @@ def display_batch(X_batch, y_batch):
     '''
 
     from dataset import CaptchaDataset
-    dataset = CaptchaDataset()
+    dataset = CaptchaDataset("../dataset")
     texts = dataset.labels_to_text(y_batch.argmax(axis=2))
 
     n = X_batch.shape[0]

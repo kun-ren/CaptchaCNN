@@ -3,12 +3,11 @@ This script provides helper methods & classes to provide the features & labels
 from the dataset for the deep learning models train/evaluate methods
 '''
 
-from itertools import product, islice, chain
+from itertools import islice
 from functools import lru_cache
 
 import keras
-from keras.layers import Input, Flatten, Dense
-from keras.models import Model
+
 
 import numpy as np
 from scipy.optimize import minimize
@@ -25,9 +24,9 @@ class ImageGenerator(keras.preprocessing.image.ImageDataGenerator):
     '''
     def __init__(self):
         super().__init__(
-            width_shift_range=0.1,
-            shear_range=0.15,
-            rotation_range=7)
+            width_shift_range=0,
+            shear_range=0.0,
+            rotation_range=0.0)
 
 
 class InputFlow:
@@ -147,7 +146,7 @@ if __name__ == '__main__':
     from dataset import CaptchaDataset
     from utils import display_batch
 
-    dataset = CaptchaDataset()
+    dataset = CaptchaDataset("../dataset")
     it = iter(InputFlow(dataset.X, dataset.y, generate_samples=4000, batch_size=4 ))
     X_batch, y_batch = next(it)
 

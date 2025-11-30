@@ -1,5 +1,4 @@
 
-
 '''
 This module is intented to provide helper methods & classes to load the captha text
 datasets
@@ -9,264 +8,96 @@ from dataset import CaptchaDataset
 dataset = CaptchaDataset()
 X, y = dataset.X, dataset.y
 '''
-
-# Standard python imports
+import os
 from os import listdir
-from os.path import isdir, isfile, join
-from re import match
-from itertools import product, count, chain
+from os.path import isdir, join
+from itertools import product
 from functools import lru_cache
-from math import floor
+
 
 # DL stack imports
 import numpy as np
-import skimage
 from keras.utils import to_categorical
 import sklearn
 import sklearn.model_selection
 import cv2 as cv
 
-# Utils imports
-from utils.singleton import singleton
-from utils.dictnamespace import DictNamespace
-
-# Configuration imports
-from configobj import ConfigObj as Config
-from validate import Validator as ConfigValidator, is_int_list, is_string
-from validate import ValidateError
-from config import global_config
-
-@singleton
 class CaptchaDataset:
-    def __init__(self):
-        pass
+    def __init__(self, data_dir):
+        self.data_dir = data_dir
+        self.X, self.y, self.y_labels, self.alphabet = self.load_data()
 
-    @property
-    @lru_cache(maxsize=1)
-    def config(self):
-        '''
-        This property returns a dictionary with all the configuration variables:
-        DATASET_DIR, CAPTCHA_TEXT_SIZE, IMAGE_DIMS
-        For more info, read the dataset.conf file.
-        '''
-        # Helper methods to check config variables
-        def check_image_dims(value):
-            dims = is_int_list(value, min=2, max=2)
-            for dim in dims:
-                if dim <= 0:
-                    raise ValidateError('Wrong image dimensions specified: {}'.format(dims))
-            return dims
+        self.num_samples = self.y.shape[0]
+        self.image_dims = self.X.shape[1:]
+        self.text_size = self.y.shape[1]
+        self.alphabet = list("0123456789")
+        self.num_char_classes = len(self.alphabet)
 
-        def check_dir_exists(value):
-            value = is_string(value)
-            if not isdir(value):
-                raise ValidateError('Directory {} doesnt exist'.format(value))
-            return value
-
-        # Load and validate the configuration
-        config = Config(join('config', 'dataset.conf'),
-                        configspec=join('config', 'dataset.spec.conf'),
-                        stringify=True)
-        result = config.validate(ConfigValidator({
-            'image_dims': check_image_dims,
-            'dir': check_dir_exists
-        }), preserve_errors=True)
-
-        # Raise an error if the configuration is not valid
-        if result is not True:
-            raise Exception('Invalid dataset configuration file: {}'.format(result))
-
-        # Return the configuration vars
-        config = DictNamespace(config, recursive=True)
-        return config
-
-
-
-
-    @property
-    @lru_cache(maxsize=1)
-    def data(self):
+    def load_data(self):
         '''
         This method returns a dictionary with all the data in the dataset
         It holds the next entries: X, y, y_labels, alphabet
         '''
+        text_size = 4
+        image_dims = (45, 80)
 
-        def load_data():
-            config = self.config
-            text_size = config.CAPTCHA_TEXT_SIZE
-            data_dir = config.DATASET_DIR
-            image_dims = tuple(config.IMAGE_DIMS)
+        # Get a list of images to be loaded
+        images = listdir(self.data_dir)
 
-            # Get a list of images to be loaded
-            images = listdir(data_dir)
+        # Extract captcha texts from the filenames
+        texts = [os.path.basename(image).split('.')[0].split('-')[0] for image in images]
 
-            # Filter the images (only load those with a valid basename)
-            images = list(filter(lambda image: match('^[a-z0-9]+\..+$', image), images))
+        # fixed charset 0-9
+        alphabet = list("0123456789")
+        alphabet.sort()
 
-            # Extract captcha texts from the filenames
-            texts = [match('^([a-z0-9]+)\..+$', image).group(1) for image in images]
+        # Generate image labels
+        y_labels = np.zeros([len(texts), text_size], dtype=np.uint8)
+        for i, j in product(range(0, len(texts)), range(0, text_size)):
+            text = texts[i]
+            y_labels[i, j] = alphabet.index(text[j])
 
-            # Get the all the characters used in the dataset
-            alphabet = list(frozenset(chain.from_iterable(texts)))
-            alphabet.sort()
+        # Generate categorical labels
+        y = np.zeros([len(texts), text_size, len(alphabet)], dtype=np.uint8)
+        for i, j in product(range(0, len(texts)), range(0, text_size)):
+            y[i, j, :] = to_categorical(y_labels[i, j], len(alphabet))
 
-            # Generate image labels
-            y_labels = np.zeros([len(texts), text_size], dtype=np.uint8)
-            for i, j in product(range(0, len(texts)), range(0, text_size)):
-                text = texts[i]
-                y_labels[i, j] = alphabet.index(text[j])
+        # Load images & process them
+        X = np.zeros((len(texts),) + image_dims + (1,), dtype=np.float32)
 
-            # Generate categorical labels
-            y = np.zeros([len(texts), text_size, len(alphabet)], dtype=np.uint8)
-            for i, j in product(range(0, len(texts)), range(0, text_size)):
-                y[i, j, :] = to_categorical(y_labels[i, j], len(alphabet))
+        for i, image in zip(range(0, len(images)), images):
+            # Read the image in gray scale colorspace
+            x = cv.cvtColor(cv.imread(self.data_dir + '/' + image), cv.COLOR_BGR2GRAY)
 
-            # Load images & process them
-            X = np.zeros((len(texts),) + image_dims + (1,), dtype=np.float32)
+            h, w = x.shape
+            H, W = image_dims
 
-            for i, image in zip(range(0, len(images)), images):
-                # Read the image in gray scale colorspace
-                x = cv.cvtColor(cv.imread(data_dir + '/' + image), cv.COLOR_BGR2GRAY)
+            # Reduce image size of it has greater shape than what we want
+            if h > H or w > W:
+                x = cv.resize(x, image_dims, interpolation=cv.INTER_AREA)
+                h, w = image_dims
 
-                h, w = x.shape
-                H, W = image_dims
+            # Add borders with the background color to fill the gaps
+            diffh, diffw = H - h, W - w
 
-                # Reduce image size of it has greater shape than what we want
-                if h > H or w > W:
-                    x = cv.resize(x, image_dims, interpolation=cv.INTER_AREA)
-                    h, w = image_dims
+            if diffh > 0 or diffw > 0:
+                top, left = diffh // 2, diffw // 2
+                bottom, right = top, left
 
-                # Add borders with the background color to fill the gaps
-                diffh, diffw = H - h, W - w
+                if diffh % 2 > 0:
+                    top += 1
+                if diffw % 2 > 0:
+                    left += 1
 
-                if diffh > 0 or diffw > 0:
-                    top, left = diffh // 2, diffw // 2
-                    bottom, right = top, left
+                x = cv.copyMakeBorder(x, top, bottom, left, right, cv.BORDER_REPLICATE, value=(255, 255, 255))
 
-                    if diffh % 2 > 0:
-                        top += 1
-                    if diffw % 2 > 0:
-                        left += 1
+            # Normalize image pixel intensities in the range [0, 1]
+            x = x.astype(np.float32) / 255
 
-                    x = cv.copyMakeBorder(x, top, bottom, left, right, cv.BORDER_REPLICATE, value=(255, 255, 255))
+            # Finally store the preprocessed image
+            X[i, :, :, 0] = x
 
-                # Normalize image pixel intensities in the range [0, 1]
-                x = x.astype(np.float32) / 255
-
-                # Finally store the preprocessed image
-                X[i, :, :, 0] = x
-
-
-            return {
-                'X': X,
-                'y': y,
-                'y_labels': y_labels,
-                'alphabet': alphabet
-            }
-
-
-        # Try to reuse preprocessed data.
-        preprocessed_data_file = join(global_config.HOME_DIR, '.preprocessed-data.npz')
-        try:
-            data = dict(np.load(preprocessed_data_file))
-        except:
-            # Dataset had not be processed yet. Process it and save the results
-            # in a file
-            data = load_data()
-            np.savez_compressed(preprocessed_data_file, **data)
-
-        # Return the preprocessed data
-        data = DictNamespace(data)
-        return data
-
-
-    @property
-    def num_samples(self):
-        '''
-        Returns the number of samples on the dataset
-        '''
-        return self.y.shape[0]
-
-    @property
-    def image_dims(self):
-        '''
-        Returns the size of the images in the dataset. A 3D vector of type:
-        height x width x channels
-        '''
-        return self.X.shape[1:]
-
-
-    @property
-    def X(self):
-        '''
-        Returns all the images in the dataset as 4D tensor of size:
-        n x H x W x 1
-        Where n is the number of samples, H and W are the width and height of
-        the images (The last dimension is the number of channels, which is 1)
-        '''
-        return self.data.X
-
-
-    @property
-    def text_size(self):
-        '''
-        Returns the number of fixed characters on each captcha image
-        '''
-        return self.y.shape[1]
-
-
-    @property
-    def alphabet(self):
-        '''
-        Returns all characters that appears on the captcha images.
-        Its a list of string values of size 1
-        e.g. 'a', 'b', 'c', ..., 'z'
-        The corresponding label or class for each character will be the index
-        position that have on this list
-        '''
-        return self.data.alphabet
-
-
-    @property
-    def num_char_classes(self):
-        '''
-        Returns the number of unique characters classes on captcha image texts
-        (its the same as len(alphabet) )
-        '''
-        return len(self.alphabet)
-
-    @property
-    def y_labels(self):
-        '''
-        Returns the labels of the samples in the dataset.
-
-        It will be a 2D array of size n x m
-        n is the number of samples in the dataset
-        m will be the number of characters on each captcha image
-        All the values will be in the interval [0, q) where q is the number of
-        character classes.
-        '''
-        return self.data.y_labels
-
-
-    @property
-    def y(self):
-        '''
-        Returns the categoric labels of the samples in the dataset.
-
-        A 3D array with size n x m x q
-        n is the number of samples in the dataset
-        m will be the number of characters on each captcha image
-        q is the number of character classes.
-
-        It satisfies that:
-        for each 0 <= i < n and 0 <= j < m   =>   sum y[i, j, :] is 1
-        also for each 0 <= k < q, y[i, j, k] is either 0 or 1 (False or True)
-
-        y_labels is equivalent to np.argmax(y, axis=2)
-        '''
-        return self.data.y
-
+        return X,y, y_labels, alphabet
 
     def labels_to_text(self, y_labels):
         '''
@@ -334,8 +165,10 @@ class CaptchaDataset:
                     best_result = list(train_samples)
                 history[i] = loss
 
-                train_rankings = np.maximum(np.multiply(y[train_samples, :, :], train_char_f - test_char_f), 0).sum(axis=2).sum(axis=1)
-                test_rankings = np.maximum(np.multiply(y[test_samples, :, :], test_char_f - train_char_f), 0).sum(axis=2).sum(axis=1)
+                train_rankings = np.maximum(np.multiply(y[train_samples, :, :], train_char_f - test_char_f), 0).sum \
+                    (axis=2).sum(axis=1)
+                test_rankings = np.maximum(np.multiply(y[test_samples, :, :], test_char_f - train_char_f), 0).sum \
+                    (axis=2).sum(axis=1)
                 train_rankings /= train_rankings.sum()
                 test_rankings /= test_rankings.sum()
 
@@ -362,7 +195,7 @@ class CaptchaDataset:
 if __name__ == '__main__':
     import pandas as pd
 
-    dataset = CaptchaDataset()
+    dataset = CaptchaDataset("../dataset")
 
     print('Loading captcha dataset....')
 
@@ -375,7 +208,7 @@ if __name__ == '__main__':
             'Number of char classes'
         ],
         'values': [
-            dataset.config.DATASET_DIR,
+            "../dataset",
             dataset.num_samples,
             dataset.image_dims,
             dataset.text_size,

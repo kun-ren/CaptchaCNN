@@ -1,7 +1,5 @@
-
 import cv2 as cv
 import numpy as np
-from itertools import islice
 from functools import lru_cache
 import pickle
 
@@ -354,7 +352,7 @@ if __name__ == '__main__':
 
     # Get a batch of samples of size n
     n = 9
-    dataset = CaptchaDataset()
+    dataset = CaptchaDataset("../dataset")
     input = iter(InputFlow(dataset.X, dataset.y, batch_size=n))
 
     X_batch, y_batch = next(input)

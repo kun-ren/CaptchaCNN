@@ -60,41 +60,77 @@ def find_char_separators(img, num_chars=2):
 
 def process_image(img, dsize):
     '''
-    This method takes an image and process it (its optimized for images that contains
-    characters inside from the captcha dataset):
-    - It tries to homogenize the background color by painting gray scaled colors that
-    not belongs to the foreground with white
-
-    - Then its resized to fit the size specified (if the image is smaller, borders with the
-    same color as the background will be added on each direction)
+    Process single character image into fixed dsize (height, width).
+    Defensive checks: handle None / empty arrays, normalize dtype/scale,
+    check cv.threshold return value.
     '''
+    # Basic validation
+    if img is None:
+        raise ValueError("process_image: received None as img")
 
-    # Process the image
-    inverted = 255 - img
-    ret, thresholded = cv.threshold(inverted, 70, 255, cv.THRESH_BINARY)
-    img = 255 - np.multiply((thresholded > 0), inverted)
+    img = np.asarray(img)
+    if img.size == 0:
+        # return a white image of the target size (uint8)
+        dh, dw = dsize
+        return 255 * np.ones((dh, dw), dtype=np.uint8)
 
-    # Resize the image
+    # Ensure single-channel 2D array
+    if img.ndim == 3 and img.shape[2] == 3:
+        # convert to gray if a 3-channel image somehow arrived
+        img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+    elif img.ndim != 2:
+        raise ValueError(f"process_image: unexpected img ndim={img.ndim}, shape={img.shape}")
+
+    # Normalize dtype to uint8 in [0,255]
+    if img.dtype != np.uint8:
+        # If image looks normalized to [0,1], scale up
+        try:
+            img_max = float(np.nanmax(img))
+        except Exception:
+            img_max = None
+        if img_max is not None and img_max <= 1.0:
+            img_u8 = (img * 255.0).clip(0, 255).astype(np.uint8)
+        else:
+            # otherwise just cast (may still be fine)
+            img_u8 = img.astype(np.uint8)
+    else:
+        img_u8 = img
+
+    # Process: invert and threshold
+    inverted = 255 - img_u8
+    try:
+        ret, thresholded = cv.threshold(inverted, 70, 255, cv.THRESH_BINARY)
+    except Exception as e:
+        raise RuntimeError(f"process_image: cv.threshold failed for shape={inverted.shape}, dtype={inverted.dtype}: {e}")
+
+    if thresholded is None:
+        raise RuntimeError(f"process_image: cv.threshold returned None for shape={inverted.shape}, dtype={inverted.dtype}")
+
+    # Build final image (foreground mask * inverted)
+    mask = (thresholded > 0).astype(np.uint8)
+    img_proc = 255 - (mask * inverted)
+
+    # Resize/pad/crop to target dsize
     dh, dw = dsize
-    h, w = img.shape
+    h, w = img_proc.shape
 
     if w < dw:
         left = floor((dw - w) / 2)
         right = dw - w - left
-        img = cv.copyMakeBorder(img, 0, 0, left, right, cv.BORDER_CONSTANT, value=(255, 255, 255))
+        img_proc = cv.copyMakeBorder(img_proc, 0, 0, left, right, cv.BORDER_CONSTANT, value=255)
     elif w > dw:
         left = floor((w - dw) / 2)
-        img = img[:, left:left+dw]
+        img_proc = img_proc[:, left:left+dw]
 
     if h < dh:
         top = floor((dh - h) / 2)
         bottom = dh - h - top
-        img = cv.copyMakeBorder(img, top, bottom, 0, 0, cv.BORDER_CONSTANT, value=(255, 255, 255))
+        img_proc = cv.copyMakeBorder(img_proc, top, bottom, 0, 0, cv.BORDER_CONSTANT, value=255)
     elif h > dh:
         top = floor((h - dh) / 2)
-        img = img[top:top+dh, :]
+        img_proc = img_proc[top:top+dh, :]
 
-    return img
+    return img_proc
 
 
 
@@ -117,7 +153,7 @@ def split_array(a, separators, axis=1):
 
 
 
-def find_chars(img, char_size, num_chars=5):
+def find_chars(img, char_size, num_chars=4):
     '''
     This function takes a gray scaled image and detects text characters
     (Is optimized for the captcha dataset)

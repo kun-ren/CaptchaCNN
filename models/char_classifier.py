@@ -1,21 +1,40 @@
 
-
 import numpy as np
 import keras
-import keras.backend as K
 from keras.layers import *
 
 from dataset import CaptchaDataset
+from gen_char_dataset import CharImageGenerator
 
+
+def generate_dataset(path):
+    X_list = []
+    y_list = []
+
+    dataset = CaptchaDataset(path)
+    dataset_generator = iter(CharImageGenerator(dataset))
+
+    for X_char, y_char in dataset_generator:
+        X_list.append(X_char)
+        y_list.append(y_char)
+
+        if len(X_list) == dataset.num_samples * dataset.text_size:
+            break
+
+    X = np.array(X_list).astype(np.float32).reshape((-1, 45, 40, 1))
+    y = np.array(y_list).astype(np.uint8)
+    print(X.shape)
+    print(y.shape)
+
+    return X, y
 
 class CharClassifier(keras.models.Model):
     '''
     This class defines a convolutional neuronal network to classify individual
     characters on captcha image
     '''
-    def __init__(self, char_size=(40, 40)):
-        dataset = CaptchaDataset()
-        num_classes = dataset.num_char_classes
+    def __init__(self, char_size=(45, 40)):
+        num_classes = 10
 
         # The next lines defines the layers of the CNN
 
@@ -74,11 +93,8 @@ if __name__ == '__main__':
 
     params = parser.parse_args()
 
-
-    # Load data generated using gen_char_dataset()
-    data = np.load('.chars.npz')
-    X, y = data['X'], data['y']
-    n = X.shape[0]
+    X_train, y_train = generate_dataset("../dataset")
+    n = y_train.shape[0]
 
     train, eval, verbose = params.train, params.eval, params.verbose
     batch_size, epochs, test_size = params.batch_size[0], params.epochs[0],params.test_size[0]
@@ -93,36 +109,25 @@ if __name__ == '__main__':
     if num_samples < n:
         # Use only part of the dataset
         indices = np.random.choice(np.arange(0, n), size=num_samples, replace=False)
-        X, y = X[indices], y[indices]
+        X_train, y_train = X_train[indices], y_train[indices]
 
     # Get char labels
-    y_labels = y.argmax(axis=1)
+    y_labels = y_train.argmax(axis=1)
 
     # Build the model
-    model = CharClassifier(X.shape[1:3])
+    model = CharClassifier(X_train.shape[1:3])
 
     # Show model info
     if verbose:
         model.summary()
 
-    # Split data into train & test sets
-    if train and eval:
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.15, shuffle=True, stratify=y_labels)
-    elif not eval:
-        X_train, y_train = X, y
-    else:
-        X_test, y_test = X, y
-
     if train:
         if verbose:
             print('Training the model...')
         # Train the model
-        callbacks = [
-            EarlyStopping(min_delta=0.01, monitor='val_loss', mode='min', patience=1),
-            ModelCheckpoint('.char-classifier-weights.hdf5', monitor='val_loss', mode='min', period=1, save_weights_only=True)
-        ]
-        result = model.fit(X_train, y_train, batch_size=8, epochs=epochs, verbose=verbose, validation_split=0.1, callbacks=callbacks)
+        result = model.fit(X_train, y_train, batch_size=batch_size, epochs=epochs, verbose=verbose, validation_split=test_size,)
         history = result.history
+        model.save_weights(".char-classifier-weights.hdf5")
 
         # Show train performance score history
 
@@ -157,17 +162,31 @@ if __name__ == '__main__':
         if verbose:
             print('Testing the model...')
 
+        X_test, y_test = generate_dataset("../dataset_predict")
+
         # Evaluate the model on test
         y_test_pred = model.predict(X_test, verbose=verbose)
 
         # Show accuracy score
         y_test_labels = y_test.argmax(axis=1)
         y_test_labels_pred = y_test_pred.argmax(axis=1)
+
+        num_chars_per_captcha = 4
+        alphabet = list("0123456789")
+
+        # 将索引映射为字符
+        chars = [alphabet[idx] for idx in y_test_labels_pred]
+
+        # 每 4 个字符组成一个验证码字符串
+        captchas = [''.join(chars[i:i + num_chars_per_captcha])
+                    for i in range(0, len(chars), num_chars_per_captcha)]
+
+        print(captchas)
+
         print('Accuracy on test set: {}'.format(np.round(accuracy_score(y_test_labels, y_test_labels_pred), 4)))
 
         # Show evaluation confusion matrx
         plt.figure(figsize=(6, 5))
-        alphabet = CaptchaDataset().alphabet
         sns.heatmap(confusion_matrix(y_test_labels, y_test_labels_pred), annot=True, fmt='d',
                                     xticklabels=alphabet, yticklabels=alphabet)
         plt.title('Confusion matrix of eval predictions')
